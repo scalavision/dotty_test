@@ -9,3 +9,4 @@ project directory and type `code .` to open VS Code
 
 For further information, watch my playlist:
 [ScQuilL Sessions - Quill, Dotty, and Macros](https://www.youtube.com/watch?v=0PSg__PPjY8&list=PLqky8QybCVQYNZY_MNJpkjFKT-dAdHQDX)
+
