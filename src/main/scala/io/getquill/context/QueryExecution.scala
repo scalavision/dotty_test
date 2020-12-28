@@ -16,14 +16,18 @@ import io.getquill.derived._
 import io.getquill.context.mirror.MirrorDecoders
 import io.getquill.context.mirror.Row
 import io.getquill.dsl.GenericDecoder
-import io.getquill.quoter.ScalarPlanter
+import io.getquill.dsl.GenericEncoder
+import io.getquill.quoter.Planter
+import io.getquill.quoter.EagerPlanter
+import io.getquill.quoter.LazyPlanter
 import io.getquill.ast.Ast
 import io.getquill.ast.ScalarTag
 import scala.quoted._
 import io.getquill.ast.{Transform, QuotationTag}
 import io.getquill.quoter.QuotationLot
 import io.getquill.quoter.QuotedExpr
-import io.getquill.quoter.ScalarPlanterExpr
+import io.getquill.quoter.PlanterExpr
+import io.getquill.quoter.Planter
 import io.getquill.idiom.ReifyStatement
 import io.getquill.Query
 import io.getquill.Action
@@ -116,7 +120,7 @@ object QueryExecution:
       // Is the expansion on T or RawT, need to investigate
       val expandedAst = Expander.runtimeImpl[T]('{ $query.ast })
 
-      val prepare = '{ (row: PrepareRow) => LiftsExtractor.apply[PrepareRow]($query.lifts, row) }
+      val prepare = '{ (row: PrepareRow) => LiftsExtractor.withLazy[PrepareRow]($query.lifts, row) }
       val extractor = extract match
         case ExtractBehavior.Extract => '{ Some( (r: ResultRow) => $converter.apply($decoder.apply(1, r)) ) }
         case ExtractBehavior.Skip =>    '{ None }
@@ -125,12 +129,38 @@ object QueryExecution:
       '{  RunDynamicExecution.apply[RawT, T, Q, D, N, PrepareRow, ResultRow, Res]($query, $ContextOperation, $prepare, $extractor, $expandedAst) }
     
 
+    
+    def resolveLazyLifts(lifts: List[Expr[Planter[?, ?]]]): List[Expr[EagerPlanter[?, ?]]] =
+      lifts.map {
+        case '{ ($e: EagerPlanter[a, b]) } => e
+        case '{ $l: LazyPlanter[a, b] } =>
+          val tpe = l.asTerm.tpe
+          tpe.asType match {
+            case '[LazyPlanter[t, row]] =>
+              println(s"Summoning type: ${TypeRepr.of[t].show}")
+              Expr.summon[GenericEncoder[t, ResultRow]] match {
+                case Some(decoder) =>
+                  '{ EagerPlanter[t, ResultRow]($l.value.asInstanceOf[t], $decoder, $l.uid) }
+                case None => 
+                  report.throwError("Decoder could not be summoned")
+              }
+          }
+          
+          //report.throwError(s"Found Type: ${tpe.show} at ${Printer.TreeShortCode.show(l.asTerm)}", l)
+
+          // Expr.summon[GenericDecoder[ResultRow, DecoderT]] match {
+          //   case Some(decoder) => decoder
+          //   case None => report.throwError("Decoder could not be summoned")
+          // }
+      }
+
     /** 
      * Execute static query via ctx.executeQuery method given we have the ability to do so 
      * i.e. have a staticState 
      */
     def executeStatic[RawT: Type](staticState: StaticState, converter: Expr[RawT => T], extract: ExtractBehavior): Expr[Res] =    
-      val StaticState(query, lifts) = staticState
+      val StaticState(query, allLifts) = staticState
+      val lifts = Expr.ofList(resolveLazyLifts(allLifts))
       val decoder = summonDecoderOrThrow[RawT]
 
       val prepare = '{ (row: PrepareRow) => LiftsExtractor.apply[PrepareRow]($lifts, row) }
